@@ -1036,6 +1036,20 @@ html.fr-modal,html.fr-modal body{overflow:hidden}
     return o.started ? 'fetch' : 'wait'; // saknas: hämtas från matchstart
   }
 
+  // Veckans höjdpunkter. rows: [{ name, points, move, bench, paid, trNet }] (null = okänt, räknas inte).
+  // Ger { best, worst, rise, fall, bench, penalty, transfer } = { value, teams: [namn] } eller null; lika värden delar platsen.
+  function weekHighlights(rows) {
+    function pick(key, dir, keep) {
+      var v = (rows || []).filter(function (r) { return r[key] != null && isFinite(r[key]) && (!keep || keep(Number(r[key]))); });
+      if (!v.length) return null;
+      var top = v.reduce(function (m, r) { return dir * Number(r[key]) > dir * m ? Number(r[key]) : m; }, Number(v[0][key]));
+      return { value: top, teams: v.filter(function (r) { return Number(r[key]) === top; }).map(function (r) { return r.name; }) };
+    }
+    var pos = function (x) { return x > 0; };
+    return { best: pick('points', 1), worst: pick('points', -1), rise: pick('move', 1, pos), fall: pick('move', -1, function (x) { return x < 0; }),
+      bench: pick('bench', 1, pos), penalty: pick('paid', 1, pos), transfer: pick('trNet', 1) };
+  }
+
   // Rivalernas spelare: ägs av minst en rival men ger mig inga poäng (ej ägd, på min bänk eller ×0).
   function rivalPlayers(myUc, entries) {
     return impact(myUc, entries).filter(function (r) { return r.ownersOthers >= 1 && r.myMult === 0; }).map(function (r) {
@@ -1371,6 +1385,13 @@ html.fr-modal,html.fr-modal body{overflow:hidden}
     t('rivalernas spelare: min bänk med', [rpId[2].onMyBench, rpId[2].ownersOthers, rpId[2].impPct], [true, 1, -33.3]);
     t('rivalernas spelare: ej ägd Imp = −EO', [rpId[3].onMyBench, rpId[3].importance, rpId[3].impPct], [false, -1, -100]);
     t('rivalernas spelare: andel rivaler', [rpId[3].share, rpId[3].rivals], [2 / 3, 3]);
+    var wh = weekHighlights([{ name: 'A', points: 50, move: 2, bench: 12, paid: 0, trNet: 7 }, { name: 'B', points: 38, move: -3, bench: 12, paid: 20, trNet: null },
+      { name: 'C', points: 50, move: 0, bench: null, paid: 10, trNet: -4 }]);
+    t('höjdpunkter: bäst med delad plats', [wh.best.value, wh.best.teams], [50, ['A', 'C']]);
+    t('höjdpunkter: sämst, lyft, tapp', [wh.worst.teams, wh.rise.value, wh.fall.teams], [['B'], 2, ['B']]);
+    t('höjdpunkter: bänk, avdrag, bästa byte', [wh.bench.teams, wh.penalty.value, wh.transfer.teams], [['A', 'B'], 20, ['A']]);
+    var wh0 = weekHighlights([{ name: 'A', points: 10, move: 0, bench: 0, paid: 0, trNet: null }]);
+    t('höjdpunkter: inga lyft, bänkpoäng eller avdrag = null', [wh0.rise, wh0.fall, wh0.bench, wh0.penalty, wh0.transfer], [null, null, null, null, null]);
     var L3 = [{ id: '1' }, { id: '2' }, { id: '3' }];
     t('liga: förvald öppnas', chooseLeague('2', '', L3, {}), { league: '2' });
     t('liga: första gången, flera ligor -> välj', chooseLeague('', '', L3, {}), { pick: true });
@@ -1729,7 +1750,7 @@ html.fr-modal,html.fr-modal body{overflow:hidden}
 
   var FSL = { SCORING: SCORING, breakdownRows: breakdownRows, mergeOfficial: mergeOfficial, snIndex: snIndex, snLookup: snLookup, mmss: mmss, qrMatrix: qrMatrix, qrSvg: qrSvg, stripSensitive: stripSensitive, CARDS: CARDS, normCard: normCard, activeCard: activeCard, usedCards: usedCards, seasonCards: seasonCards, flattenLineup: flattenLineup,
     posClass: posClass, ageAt: ageAt, computeMultiplier: computeMultiplier, effectiveMultiplier: effectiveMultiplier, basePoints: basePoints,
-    prepareTeam: prepareTeam, inferCard: inferCard, transfersDiff: transfersDiff, transferGain: transferGain, pickMyTeam: pickMyTeam, ownership: ownership, impact: impact, rivalPlayers: rivalPlayers, squadPolicy: squadPolicy, ageTag: ageTag, priceTier: priceTier, chooseLeague: chooseLeague, rivalCompare: rivalCompare,
+    prepareTeam: prepareTeam, inferCard: inferCard, transfersDiff: transfersDiff, transferGain: transferGain, pickMyTeam: pickMyTeam, ownership: ownership, impact: impact, rivalPlayers: rivalPlayers, weekHighlights: weekHighlights, squadPolicy: squadPolicy, ageTag: ageTag, priceTier: priceTier, chooseLeague: chooseLeague, rivalCompare: rivalCompare,
     parseShare: parseShare, parseAnyInput: parseAnyInput, buildShareQuery: buildShareQuery, customLeagues: customLeagues, searchTeams: searchTeams, MAX_LEAGUE_TEAMS: MAX_LEAGUE_TEAMS, makeDemo: makeDemo, selftest: selftest };
   root.FSL = FSL;
   if (typeof module !== 'undefined' && module.exports) module.exports = FSL;
@@ -2541,6 +2562,48 @@ html.fr-modal,html.fr-modal body{overflow:hidden}
       })();
     })();
   }
+  // Veckans höjdpunkter (Säsong): bästa/sämsta omgång, lyft/tapp i tabellen, bänkpoäng, byten.
+  // Byten jämförs mot förra omgångens lag (hämtas som för fliken Byten och sparas när omgången är klar).
+  function trOf(uc) {
+    var cur = S.entries[uc], prev = S.prev[uc];
+    if (!cur || cur.status !== 'ok' || !prev) return null;
+    var d = FSL.transfersDiff(prev.status === 'ok' ? prev.players : [], cur.players);
+    if (d.newCoach || !d.in.length) return null;
+    var free = cur.card && cur.card.code === 'FREE_EXCHANGE', paid = cur.paid;
+    var extra = paid != null ? Math.round(paid / 10) : free ? 0 : Math.max(0, d.in.length - 1);
+    var g = FSL.transferGain(d.in.map(weekPts), d.out.map(weekPts), extra, paid);
+    return g.unknown ? null : g.net;
+  }
+  function benchOf(e) {
+    if (!e || e.status !== 'ok') return null;
+    var b = e.players.filter(function (p) { return p.group === 'BENCH' && !p.eff; }), sum = 0, known = false;
+    b.forEach(function (p) { var v = weekPts(p); if (v != null) { sum += v; known = true; } });
+    return known ? sum : null;
+  }
+  function highlightsHtml() {
+    if (!S.teams.length || !roundObj(S.roundNo)) return '';
+    var rows = S.teams.map(function (t) {
+      var e = S.entries[t.user_code], prevRank = Number(t.previous_rank) > 0 ? Number(t.previous_rank) : null;
+      return { name: t.team_name, points: t.points == null || t.points === '' ? null : Number(t.points), move: prevRank == null ? null : prevRank - Number(t.rank),
+        bench: benchOf(e), paid: e && e.status === 'ok' && e.paid != null ? e.paid : null, trNet: roundObj(S.roundNo - 1) ? trOf(t.user_code) : null };
+    });
+    var h = FSL.weekHighlights(rows), sg = function (v) { return (v > 0 ? '+' : v < 0 ? '−' : '±') + Math.abs(v); };
+    var line = function (label, x, fmt, tip) {
+      return '<tr><td>' + label + (tip ? ' <span class="muted small">' + tip + '</span>' : '') + '</td><td class="n">' + (x ? '<b>' + fmt(x.value) + '</b>' : '<span class="muted">–</span>') + '</td><td>' +
+        (x ? x.teams.slice(0, 3).map(function (n) { return '<b>' + esc(n) + '</b>'; }).join(', ') + (x.teams.length > 3 ? ' <span class="muted">+ ' + (x.teams.length - 3) + ' till</span>' : '') : '<span class="muted">–</span>') + '</td></tr>';
+    };
+    var p = function (v) { return Math.round(v) + ' p'; };
+    var loading = entriesList().length < S.teams.length || (roundObj(S.roundNo - 1) && S.teams.some(function (t) { return !S.prev[t.user_code]; }));
+    var live = Number((roundObj(S.roundNo) || {}).points_processed) !== 1;
+    return '<div class="card hl-card"><h2>Veckans höjdpunkter · omg ' + esc(S.roundNo) + '</h2>' + (live ? '<p class="small muted">Omgången pågår – än så länge.</p>' : '') +
+      '<div class="scroll"><table class="hl-t"><tbody>' +
+      line('Bäst i omgången', h.best, p) + line('Sämst i omgången', h.worst, p) +
+      line('Största lyftet', h.rise, function (v) { return '▲ ' + v; }, 'placeringar') + line('Största tappet', h.fall, function (v) { return '▼ ' + Math.abs(v); }, 'placeringar') +
+      line('Mest poäng på bänken', h.bench, p) + line('Största bytesavdraget', h.penalty, function (v) { return '−' + v + ' p'; }) +
+      line('Bästa bytet', h.transfer, function (v) { return sg(v) + ' p'; }, 'netto') +
+      '</tbody></table></div>' + (loading ? '<p class="small muted"><span class="spin sm"></span> Alla lag är inte hämtade än – listan fylls på.</p>' : '') +
+      '<p class="small muted">Lyft och tapp gäller placeringen i totaltabellen mot förra veckan. Bänkpoäng = grundpoäng för bänkspelare som inte räknades. Bästa bytet = inbytta − utbytta − avdrag, som i fliken Byten.</p></div>';
+  }
   function renderSeason() {
     var el = $('#tab-season'); if (!el) return;
     if (!S.teams.length) { el.innerHTML = ''; return; }
@@ -2576,7 +2639,7 @@ html.fr-modal,html.fr-modal body{overflow:hidden}
       (Object.keys(active).length ? ' – ' + Object.keys(active).map(function (k) { return esc(k) + ' ' + active[k]; }).join(', ') : '') + '.</div>' : '';
     if (lastL && done) summary += '<div class="sz-sum"><b>Omgång ' + lastL + ':</b> ' + nLast + ' av ' + done + ' lag spelade ett kort' +
       (Object.keys(inLast).length ? ' – ' + Object.keys(inLast).map(function (k) { return esc(k) + ' ' + inLast[k]; }).join(', ') : '') + '.</div>';
-    el.innerHTML = '<div class="card"><h2>Säsong – coachkort</h2><p class="small muted">Varje lag har sex kort för säsongen. ' +
+    el.innerHTML = highlightsHtml() + '<div class="card"><h2>Säsong – coachkort</h2><p class="small muted">Varje lag har sex kort för säsongen. ' +
       (FEATURES.seasonNext ? '<span class="sz sz-next">★ aktiverat inför nästa omgång</span> ' : '') + '<span class="sz sz-now">● aktivt i pågående omgång</span> <span class="sz sz-used">✗ förbrukat</span> <span class="sz sz-left">kvar</span></p>' +
       summary + (done < S.teams.length ? '<p class="small muted"><span class="spin sm"></span> Hämtar korten: ' + done + ' av ' + S.teams.length + ' lag…</p>' : '') + rows +
       '<p class="small muted">Korten läses ur varje låst omgång: ● = spelat i pågående omgång, ✗ = förbrukat. ' + (FEATURES.seasonNext ? 'Aktiverade kort inför nästa omgång läses från fantasy.shl.se just nu.' : 'Kort som aktiverats inför nästa omgång visas först efter deadline.') + '</p></div>';
@@ -2887,11 +2950,24 @@ html.fr-modal,html.fr-modal body{overflow:hidden}
     $('#rvNInfo').textContent = (n ? 'Topp ' + n + ' i totalen' : 'Hela ligan') + ' · ' + group.length + ' rival' + (group.length === 1 ? '' : 'er') + (inTop ? ' (ditt lag är med i topp ' + (n || S.teams.length) + ' och räknas inte)' : '');
     if (!group.length) { out.innerHTML = '<div class="card muted">Inga rivaler att jämföra med – du ' + (inTop ? 'ligger själv i topp ' + n + '. Välj ett större tal.' : 'är ensam i ligan.') + '</div>'; return; }
     var list = [me].concat(gEntries);
+    var impById = {}; FSL.impact(S.myUc, list).forEach(function (r) { impById[r.player_id] = r; });
+    var mineRows = me.players.map(function (p) {
+      var r = impById[p.player_id] || { impPct: 0, importance: 0, ownersOthers: 0, rivals: group.length };
+      var pts = weekPts(p), bench = p.group === 'BENCH' && !p.eff;
+      var mult = p.eff === 2 ? ' <span class="chip">' + (p.role === 'C' ? 'C' : '×2') + '</span>' : p.role === 'C' ? ' <span class="chip">C</span>' : '';
+      var nt = pts == null ? null : Math.round(pts * r.importance);
+      return '<tr' + (bench ? ' class="bench"' : '') + '><td>' + plBtn(p) + mult + (bench ? ' <span class="chip">bänk</span>' : '') + '</td><td>' + esc(p.position || '') + '</td>' +
+        '<td class="n">' + r.ownersOthers + '/' + r.rivals + '</td><td class="n">' + (pts == null ? (S.snState === 'loading' ? '<span class="spin sm"></span>' : '–') : pts) + '</td>' +
+        '<td class="n">' + impBar(r.impPct) + '</td><td class="n ' + cls(nt) + '"><b>' + (nt == null ? '–' : (nt > 0 ? '+' : nt < 0 ? '−' : '') + Math.abs(nt)) + '</b></td></tr>';
+    }).join('');
+    var mineCard = '<div class="card"><h2>Mina spelare · omg ' + esc(S.roundNo) + '</h2>' +
+      '<p class="small muted">Hur viktig varje spelare i din trupp är mot ' + (n ? 'topp ' + n : 'hela ligan') + '. <b>Imp</b> = din multiplikator − rivalernas snitt: +100 % = du har honom och ingen rival, 0 % = alla har honom lika, minus = rivalerna tjänar mer på honom (t.ex. som kapten eller när han sitter på din bänk).</p>' +
+      '<div class="scroll"><table><thead><tr><th>Spelare</th><th>Pos</th><th class="n">Rivaler</th><th class="n">Poäng</th><th class="n">Imp</th><th class="n">Netto</th></tr></thead><tbody>' + mineRows + '</tbody></table></div></div>';
     var rows = FSL.rivalPlayers(S.myUc, list).map(function (r) {
       var pts = weekPts(r);
       return Object.assign(r, { pts: pts, netto: pts == null ? null : Math.round(pts * r.importance) });
     });
-    var st = S.rvSort || (S.rvSort = { key: 'net', dir: 1 }); // standard: Netto, mest negativ först
+    var st = S.rvSort || (S.rvSort = { key: 'imp', dir: 1 }); // standard: Imp, viktigast (mest negativ) först
     var val = { name: function (r) { return r.name || ''; }, club: function (r) { return r.club_id || ''; }, pos: function (r) { return r.position || ''; },
       own: function (r) { return r.ownersOthers; }, pts: function (r) { return r.pts; }, imp: function (r) { return r.importance; }, net: function (r) { return r.netto; } }[st.key];
     rows.sort(function (a, b) {
@@ -2912,7 +2988,7 @@ html.fr-modal,html.fr-modal body{overflow:hidden}
     }).join('');
     var partial = (waiting ? '<div class="warn small">Beräknat på ' + gEntries.length + ' av ' + group.length + ' rivaler – fler hämtas.</div>' : '') +
       (invalid ? '<div class="small muted" style="margin:0 0 8px">' + invalid + ' av rivalerna har inget giltigt lag hos Fantasy SHL och räknas inte.</div>' : '');
-    out.innerHTML = partial + '<div class="card"><h2>Rivalernas spelare · omg ' + esc(S.roundNo) + '</h2>' +
+    out.innerHTML = partial + mineCard + '<div class="card"><h2>Viktigaste hos rivalerna · omg ' + esc(S.roundNo) + '</h2>' +
       '<p class="small muted">' + esc(S.leagueName || 'Liga ' + S.league) + ', ' + (n ? 'topp ' + n + ' i totalen' : 'hela ligan') + ': spelare som minst en av dina ' + gEntries.length + ' rivaler har i truppen men som inte ger dig poäng (du saknar dem eller har dem på bänken). ' +
       '<b>Imp</b> = din multiplikator − rivalernas snitt (kapten ×2, bänk ×0, delat med alla rivaler i gruppen). <b>Netto</b> = poäng × Imp, alltså poäng du tappat mot ett snittlag. Tryck på en rubrik för att sortera och på en spelare för ägare och kommande matcher.</p>' +
       (rows.length ? '<div class="scroll"><table><thead><tr>' + hd + '</tr></thead><tbody>' + body + '</tbody></table></div>' : '<p class="muted small">Inga – du har alla spelare rivalerna har.</p>') + '</div>';
@@ -3472,7 +3548,7 @@ html.fr-modal,html.fr-modal body{overflow:hidden}
     Array.prototype.forEach.call(document.querySelectorAll('.tab'), function (x) { x.classList.toggle('hidden', x.id !== 'tab-' + name); });
     if (name === 'upcoming') renderUpcoming();
     if (name === 'schedule') renderSchedule();
-    if (name === 'season') { loadSeason(); renderSeason(); }
+    if (name === 'season') { loadSeason(); loadPrev(); renderSeason(); }
     if (name === 'rivals') renderRivals();
     if (name === 'transfers') loadPrev();
     if (S.teams.length) renderWho();
