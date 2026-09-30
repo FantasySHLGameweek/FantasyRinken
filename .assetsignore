@@ -1,0 +1,22 @@
+# Filer som inte publiceras som statiska filer på Cloudflare Workers.
+# Repo och verktyg
+.git
+.github
+node_modules
+.wrangler
+wrangler.jsonc
+.assetsignore
+.gitignore
+.gitattributes
+.DS_Store
+Thumbs.db
+desktop.ini
+# Dokument och anteckningar
+README.md
+findings.md
+launch-checklist.md
+*.md
+# Statnet-jobbets skript (körs av GitHub Actions, behövs inte av sidan)
+statnet_sync.py
+__pycache__
+*.py
